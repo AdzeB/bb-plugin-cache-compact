@@ -2,6 +2,10 @@
 
 Compact idle [BB](https://getbb.app) threads minutes before their prompt cache expires, keeping compaction on a warm cache instead of paying cold re-input rates when you return.
 
+![How Cache Compact works: comparing cold-cache eviction vs. proactive warm-cache compaction at TTL minus 3 minutes](docs/screenshots/how-it-works.png)
+
+## Live schedule in BB Settings
+
 ![Cache Compact live schedule in BB Settings showing warm idle threads with countdowns across Claude Code, Pi, and Antigravity CLI](docs/screenshots/schedule.png)
 
 ## Features
