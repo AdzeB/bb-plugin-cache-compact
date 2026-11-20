@@ -1,0 +1,10 @@
+# Changelog
+
+## 0.1.0
+
+- Proactive pre-cache-expiry compaction scheduler for idle BB threads.
+- Exact `promptCacheTtlMs` / `compactionOfferAt` tracking with native `threads.compact()` for Claude Code and Pi.
+- Configurable fallback TTL and `/compact` slash-command compaction with loop protection for Antigravity CLI (`antigravity-cli`).
+- Cold-cache skip guard (never compacts threads whose prompt cache has already expired), minimum token threshold, active child thread check, pending interaction guard, and per-thread cooldown.
+- Live **Settings → Cache Compact** schedule view with countdowns, manual compaction, per-thread opt-out, and manual re-scan.
+- `bb cache-compact` CLI (`status`, `check`, `now`, `opt-out`, `opt-in`, `reconcile`) and bundled `cache-compact` agent skill.

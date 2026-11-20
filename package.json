@@ -1,0 +1,68 @@
+{
+  "name": "bb-plugin-cache-compact",
+  "version": "0.1.0",
+  "description": "Compact idle threads minutes before their prompt cache expires, keeping compaction on a warm cache.",
+  "license": "MIT",
+  "author": {
+    "name": "Adebola",
+    "url": "https://github.com/AdzeB"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AdzeB/bb-plugin-cache-compact.git"
+  },
+  "homepage": "https://github.com/AdzeB/bb-plugin-cache-compact#readme",
+  "bugs": {
+    "url": "https://github.com/AdzeB/bb-plugin-cache-compact/issues"
+  },
+  "keywords": [
+    "bb",
+    "bb-plugin",
+    "prompt-cache",
+    "compaction",
+    "tokens",
+    "context-window",
+    "claude-code",
+    "antigravity"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22",
+    "bb": ">=0.50",
+    "bbPluginSdk": ">=0.6.157 <0.7.0"
+  },
+  "bb": {
+    "name": "Cache Compact",
+    "description": "Compact idle threads minutes before their prompt cache expires, so compaction runs on a warm cache instead of paying cold re-input rates.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": [
+      "skills"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "bb plugin build ."
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.157",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "cron-parser": "^5.5.0",
+    "hono": "^4.11.9",
+    "sonner": "^1.7.4",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  }
+}
