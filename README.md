@@ -2,6 +2,8 @@
 
 Compact idle [BB](https://getbb.app) threads minutes before their prompt cache expires, keeping compaction on a warm cache instead of paying cold re-input rates when you return.
 
+![Cache Compact live schedule in BB Settings showing warm idle threads with countdowns across Claude Code, Pi, and Antigravity CLI](docs/screenshots/schedule.png)
+
 ## Features
 
 - **Exact provider TTL support** — reads `promptCacheTtlMs` from `thread/tokenUsage/updated` events (and `compactionOfferAt` when BB's `compactExpiredCache` experiment is enabled) for **Claude Code** (`claude-code`) and **Pi** (`pi`), invoking native `threads.compact()`.
@@ -19,6 +21,8 @@ bb plugin install git:https://github.com/AdzeB/bb-plugin-cache-compact.git@^0.1.
 ## Settings
 
 Configure in **Settings → Installed plugins → Cache Compact** or via CLI (`bb plugin config cache-compact set <key> <value>`):
+
+![Cache Compact configuration panel in BB Settings](docs/screenshots/settings.png)
 
 | Setting | Default | Description |
 | --- | --- | --- |
