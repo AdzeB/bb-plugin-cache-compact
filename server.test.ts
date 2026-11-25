@@ -582,6 +582,86 @@ describe("server plugin integration", () => {
       expect.objectContaining({ threadId: "thr_opencode_1" }),
     );
 
+    // The compaction turn lands back in idle while usage is still above minTokens.
+    await harness.behavior.emitThreadEvent("thread.idle", {
+      thread: openCodeThread,
+      lastAssistantText: "Compacted.",
+    });
+
+    // Advance another 30m -> the sealed compaction must not reschedule itself.
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(compactFn).toHaveBeenCalledTimes(1);
+
+    const statusAfter = await harness.behavior.runCli(["status", "--json"]);
+    const parsedAfter = JSON.parse(statusAfter.stdout ?? "{}");
+    expect(parsedAfter.tracked[0].state).toBe("compacted");
+
+    service.controller.abort();
+    await service.done;
+    await harness.lifecycle.dispose();
+  });
+
+  it("skips an acp-opencode thread whose assumed cache lifetime already elapsed", async () => {
+    vi.useFakeTimers();
+    const startMs = Date.UTC(2026, 10, 20, 22, 0, 0);
+    vi.setSystemTime(startMs);
+
+    // No token event and no completed turn, so the anchor is updatedAt, which
+    // already sits 6m in the past: one minute past the assumed 5m lifetime.
+    const openCodeThread = makeThreadResponse({
+      id: "thr_opencode_cold",
+      providerId: "acp-opencode",
+      status: "idle",
+      updatedAt: startMs - 6 * 60_000,
+    });
+
+    const compactFn = vi.fn(async () => ({ ok: true as const }));
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "cache-compact",
+      sdk: {
+        threads: {
+          list: async (args) =>
+            args?.parentThreadId !== undefined ? [] : [openCodeThread],
+          get: async () => openCodeThread,
+          compact: compactFn,
+          experimental_headState: async () => ({
+            activePromptMode: null,
+            contextWindowUsage: {
+              estimated: false,
+              modelContextWindow: 1_000_000,
+              usedTokens: 160_000,
+            },
+            extensionStates: {},
+            modelFallback: null,
+            pendingTodos: null,
+            providerCommands: null,
+            sessionOptions: null,
+          }),
+          events: { list: async () => [] },
+          interactions: { list: async () => [] },
+        },
+      },
+    });
+
+    await plugin(bb);
+    const service = harness.behavior.runService("cache-compact-scheduler");
+
+    // Let startup reconcile settle
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(compactFn).not.toHaveBeenCalled();
+
+    const status = await harness.behavior.runCli(["status", "--json"]);
+    expect(status.exitCode).toBe(0);
+    const parsed = JSON.parse(status.stdout ?? "{}");
+    expect(parsed.tracked).toHaveLength(1);
+    expect(parsed.tracked[0].ttlSource).toBe("provider-fallback-ttl");
+    expect(parsed.tracked[0].state).toBe("expired");
+    expect(parsed.tracked[0].lastReason).toBe("already-expired");
+
+    // Nothing can schedule that thread later, even well past the assumed lifetime.
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(compactFn).not.toHaveBeenCalled();
+
     service.controller.abort();
     await service.done;
     await harness.lifecycle.dispose();
