@@ -291,8 +291,14 @@ describe("policy", () => {
       inspection: makeInspection({
         tokenUsageEvent: { seq: 20, createdAtMs: 1_000_000, promptCacheTtlMs: 300_000 },
       }),
-      prior: { compactedForSeq: null, lastCompactedAtMs: null, optedOut: false },
+      prior: {
+        compactedForSeq: null,
+        lastCompactedAtMs: null,
+        optedOut: false,
+        firstSeenAtMs: null,
+      },
       nowMs: 1_400_000,
+      explicitCompaction: false,
     });
     expect(res.kind).toBe("skip");
     if (res.kind === "skip") {
@@ -354,13 +360,19 @@ describe("policy", () => {
 
   it("skips threads below minTokens, excluded providers, active children, or recent /compact turns", () => {
     const baseNow = 1_010_000;
-    const basePrior = { compactedForSeq: null, lastCompactedAtMs: null, optedOut: false };
+    const basePrior = {
+      compactedForSeq: null,
+      lastCompactedAtMs: null,
+      optedOut: false,
+      firstSeenAtMs: null,
+    };
 
     const below = evaluateEligibility({
       config: makeConfig({ minTokens: 100_000 }),
       inspection: makeInspection({ usedTokens: 99_999 }),
       prior: basePrior,
       nowMs: baseNow,
+      explicitCompaction: false,
     });
     expect(below.kind === "skip" && below.reason).toBe("below-min-tokens");
 
@@ -369,6 +381,7 @@ describe("policy", () => {
       inspection: makeInspection({ providerId: "codex" }),
       prior: basePrior,
       nowMs: baseNow,
+      explicitCompaction: false,
     });
     expect(excluded.kind === "skip" && excluded.reason).toBe("provider-excluded");
 
@@ -377,6 +390,7 @@ describe("policy", () => {
       inspection: makeInspection({ hasActiveChildren: true }),
       prior: basePrior,
       nowMs: baseNow,
+      explicitCompaction: false,
     });
     expect(childActive.kind === "skip" && childActive.reason).toBe("active-children");
 
@@ -385,6 +399,7 @@ describe("policy", () => {
       inspection: makeInspection({ latestUserInputWasCompact: true }),
       prior: basePrior,
       nowMs: baseNow,
+      explicitCompaction: false,
     });
     expect(alreadySlashCompacted.kind === "skip" && alreadySlashCompacted.reason).toBe(
       "already-compacted",
@@ -598,6 +613,214 @@ describe("server plugin integration", () => {
 
     service.controller.abort();
     await service.done;
+    await harness.lifecycle.dispose();
+  });
+
+  it("refuses to compact a thread it has only just met, on the first scan and the second", async () => {
+    vi.useFakeTimers();
+    const startMs = Date.UTC(2026, 10, 20, 22, 0, 0);
+    vi.setSystemTime(startMs);
+
+    // Idle four minutes: the assumed 5m lifetime leaves 1m, and the 3m lead
+    // puts the due time two minutes in the past, inside the arming window.
+    const openCodeThread = makeThreadResponse({
+      id: "thr_opencode_first_scan",
+      providerId: "acp-opencode",
+      status: "idle",
+      updatedAt: startMs - 4 * 60_000,
+    });
+
+    const compactFn = vi.fn(async () => ({ ok: true as const }));
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "cache-compact",
+      sdk: {
+        threads: {
+          list: async (args) =>
+            args?.parentThreadId !== undefined ? [] : [openCodeThread],
+          get: async () => openCodeThread,
+          compact: compactFn,
+          experimental_headState: async () => ({
+            activePromptMode: null,
+            contextWindowUsage: {
+              estimated: false,
+              modelContextWindow: 1_000_000,
+              usedTokens: 160_000,
+            },
+            extensionStates: {},
+            modelFallback: null,
+            pendingTodos: null,
+            providerCommands: null,
+            sessionOptions: null,
+          }),
+          events: { list: async () => [] },
+          interactions: { list: async () => [] },
+        },
+      },
+    });
+
+    await plugin(bb);
+    const service = harness.behavior.runService("cache-compact-scheduler");
+
+    // Startup reconcile meets the thread for the first time; its due time is
+    // already in the past, so the arming delay holds it back.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(compactFn).not.toHaveBeenCalled();
+
+    const guardedStatus = await harness.behavior.runCli(["status", "--json"]);
+    expect(guardedStatus.exitCode).toBe(0);
+    const guarded = JSON.parse(guardedStatus.stdout ?? "{}");
+    expect(guarded.tracked).toHaveLength(1);
+    expect(guarded.tracked[0].state).toBe("skipped");
+    expect(guarded.tracked[0].lastReason).toBe("discovered-late");
+
+    const humanStatus = await harness.behavior.runCli(["status"]);
+    expect(humanStatus.exitCode).toBe(0);
+    expect(humanStatus.stdout ?? "").toContain(
+      "discovered late (met inside the 60s arming window)",
+    );
+
+    // A second scan finds the row it wrote, and by now the assumed lifetime
+    // has elapsed, so the honest reason is `already-expired`, not the guard.
+    await vi.advanceTimersByTimeAsync(90_000);
+    const secondScan = await harness.behavior.runCli(["reconcile"]);
+    expect(secondScan.exitCode).toBe(0);
+    expect(compactFn).not.toHaveBeenCalled();
+
+    const afterStatus = await harness.behavior.runCli(["status", "--json"]);
+    const after = JSON.parse(afterStatus.stdout ?? "{}");
+    expect(after.tracked[0].state).toBe("expired");
+    expect(after.tracked[0].lastReason).toBe("already-expired");
+
+    service.controller.abort();
+    await service.done;
+    await harness.lifecycle.dispose();
+  });
+
+  it("compacts on schedule a thread whose due time falls outside the arming window", async () => {
+    vi.useFakeTimers();
+    const startMs = Date.UTC(2026, 10, 20, 22, 0, 0);
+    vi.setSystemTime(startMs);
+
+    // Idle 30s: the 5m lifetime leaves 4m30s, and the 3m lead puts the due
+    // time 90s out, which is after the 60s arming delay.
+    const openCodeThread = makeThreadResponse({
+      id: "thr_opencode_armed",
+      providerId: "acp-opencode",
+      status: "idle",
+      updatedAt: startMs - 30_000,
+    });
+
+    const compactFn = vi.fn(async () => ({ ok: true as const }));
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "cache-compact",
+      sdk: {
+        threads: {
+          list: async (args) =>
+            args?.parentThreadId !== undefined ? [] : [openCodeThread],
+          get: async () => openCodeThread,
+          compact: compactFn,
+          experimental_headState: async () => ({
+            activePromptMode: null,
+            contextWindowUsage: {
+              estimated: false,
+              modelContextWindow: 1_000_000,
+              usedTokens: 160_000,
+            },
+            extensionStates: {},
+            modelFallback: null,
+            pendingTodos: null,
+            providerCommands: null,
+            sessionOptions: null,
+          }),
+          events: { list: async () => [] },
+          interactions: { list: async () => [] },
+        },
+      },
+    });
+
+    await plugin(bb);
+    const service = harness.behavior.runService("cache-compact-scheduler");
+
+    // Startup reconcile schedules the thread rather than skipping it.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(compactFn).not.toHaveBeenCalled();
+    const statusBefore = await harness.behavior.runCli(["status", "--json"]);
+    const before = JSON.parse(statusBefore.stdout ?? "{}");
+    expect(before.tracked[0].state).toBe("scheduled");
+
+    // Still short of the due time.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(compactFn).not.toHaveBeenCalled();
+
+    // Cross the due time -> compacts exactly once.
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(compactFn).toHaveBeenCalledTimes(1);
+    expect(compactFn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thr_opencode_armed" }),
+    );
+
+    service.controller.abort();
+    await service.done;
+    await harness.lifecycle.dispose();
+  });
+
+  it("compacts immediately when the operator asks for it explicitly", async () => {
+    vi.useFakeTimers();
+    const startMs = Date.UTC(2026, 10, 20, 22, 0, 0);
+    vi.setSystemTime(startMs);
+
+    // Never seen before, past due, and inside the arming window: the scan
+    // path would skip this thread, but `now` is an operator acting on it.
+    const openCodeThread = makeThreadResponse({
+      id: "thr_opencode_explicit",
+      providerId: "acp-opencode",
+      status: "idle",
+      updatedAt: startMs - 4 * 60_000,
+    });
+
+    const compactFn = vi.fn(async () => ({ ok: true as const }));
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "cache-compact",
+      sdk: {
+        threads: {
+          list: async (args) =>
+            args?.parentThreadId !== undefined ? [] : [openCodeThread],
+          get: async () => openCodeThread,
+          compact: compactFn,
+          experimental_headState: async () => ({
+            activePromptMode: null,
+            contextWindowUsage: {
+              estimated: false,
+              modelContextWindow: 1_000_000,
+              usedTokens: 160_000,
+            },
+            extensionStates: {},
+            modelFallback: null,
+            pendingTodos: null,
+            providerCommands: null,
+            sessionOptions: null,
+          }),
+          events: { list: async () => [] },
+          interactions: { list: async () => [] },
+        },
+      },
+    });
+
+    await plugin(bb);
+
+    const result = await harness.behavior.runCli(["now", "thr_opencode_explicit"]);
+    expect(result.exitCode).toBe(0);
+    expect(compactFn).toHaveBeenCalledTimes(1);
+    expect(compactFn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thr_opencode_explicit" }),
+    );
+
+    const status = await harness.behavior.runCli(["status", "--json"]);
+    const parsed = JSON.parse(status.stdout ?? "{}");
+    expect(parsed.tracked).toHaveLength(1);
+    expect(parsed.tracked[0].state).toBe("compacting");
+    expect(parsed.tracked[0].lastReason).not.toBe("discovered-late");
+
     await harness.lifecycle.dispose();
   });
 

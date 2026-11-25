@@ -7,6 +7,7 @@ import {
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
+  ARMING_DELAY_MS,
   DEFAULT_FALLBACK_TTL_BY_PROVIDER,
   evaluateEligibility,
   isUnsupportedCompactionError,
@@ -189,6 +190,17 @@ function describeTtlSource(
     return `via=fallback-ttl ${config.fallbackTtlMinutes}m assumed (global)`;
   }
   return `via=${record.ttlSource}`;
+}
+
+/**
+ * Expand a machine-readable skip reason for the human `status` listing. Only
+ * reasons whose token is not self-explanatory are rewritten; `lastReason`
+ * itself stays exactly as stored for `status --json`.
+ */
+function describeSkipReason(reason: string): string {
+  return reason === "discovered-late"
+    ? `discovered late (met inside the ${Math.round(ARMING_DELAY_MS / 1000)}s arming window)`
+    : reason;
 }
 
 function displayThreadTitle(
@@ -575,8 +587,10 @@ export default async function plugin(bb: BbPluginApi) {
         compactedForSeq: existing?.compactedForSeq ?? null,
         lastCompactedAtMs: existing?.lastCompactedAtMs ?? null,
         optedOut: existing?.optedOut ?? false,
+        firstSeenAtMs: existing?.firstSeenAtMs ?? null,
       },
       nowMs,
+      explicitCompaction: false,
     });
 
     const record: TrackedThreadRecord =
@@ -597,6 +611,7 @@ export default async function plugin(bb: BbPluginApi) {
             lastCompactedAtMs: existing?.lastCompactedAtMs ?? null,
             lastReason: null,
             optedOut: existing?.optedOut ?? false,
+            firstSeenAtMs: existing?.firstSeenAtMs ?? nowMs,
             updatedAtMs: nowMs,
           }
         : {
@@ -620,6 +635,7 @@ export default async function plugin(bb: BbPluginApi) {
             lastCompactedAtMs: existing?.lastCompactedAtMs ?? null,
             lastReason: eligibility.reason,
             optedOut: existing?.optedOut ?? false,
+            firstSeenAtMs: existing?.firstSeenAtMs ?? nowMs,
             updatedAtMs: nowMs,
           };
 
@@ -679,7 +695,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function runCompactionForThread(
     threadId: string,
-    options: { readonly force?: boolean; readonly signal?: AbortSignal } = {},
+    options: {
+      readonly force?: boolean;
+      readonly explicitCompaction?: boolean;
+      readonly signal?: AbortSignal;
+    } = {},
   ): Promise<{
     readonly compacted: boolean;
     readonly method: CompactionMethodKind | null;
@@ -734,8 +754,10 @@ export default async function plugin(bb: BbPluginApi) {
             compactedForSeq: existing?.compactedForSeq ?? null,
             lastCompactedAtMs: existing?.lastCompactedAtMs ?? null,
             optedOut: existing?.optedOut ?? false,
+            firstSeenAtMs: existing?.firstSeenAtMs ?? null,
           },
           nowMs,
+          explicitCompaction: options.explicitCompaction === true,
         });
 
         if (eligibility.kind === "skip") {
@@ -760,6 +782,7 @@ export default async function plugin(bb: BbPluginApi) {
             lastCompactedAtMs: existing?.lastCompactedAtMs ?? null,
             lastReason: eligibility.reason,
             optedOut: existing?.optedOut ?? false,
+            firstSeenAtMs: existing?.firstSeenAtMs ?? nowMs,
             updatedAtMs: nowMs,
           });
           bb.log.info(
@@ -789,6 +812,7 @@ export default async function plugin(bb: BbPluginApi) {
             lastCompactedAtMs: existing?.lastCompactedAtMs ?? null,
             lastReason: null,
             optedOut: existing?.optedOut ?? false,
+            firstSeenAtMs: existing?.firstSeenAtMs ?? nowMs,
             updatedAtMs: nowMs,
           });
           return {
@@ -819,6 +843,7 @@ export default async function plugin(bb: BbPluginApi) {
         lastCompactedAtMs: existing?.lastCompactedAtMs ?? null,
         lastReason: "compacting",
         optedOut: existing?.optedOut ?? false,
+        firstSeenAtMs: existing?.firstSeenAtMs ?? nowMs,
         updatedAtMs: nowMs,
       };
       store.upsert(compactingRecord);
@@ -1057,6 +1082,7 @@ export default async function plugin(bb: BbPluginApi) {
     compact_now: async ({ threadId, force }, { experimental_signal }) => {
       const outcome = await runCompactionForThread(threadId, {
         force: force === true,
+        explicitCompaction: true,
         signal: experimental_signal,
       });
       notifyChanged();
@@ -1148,7 +1174,7 @@ export default async function plugin(bb: BbPluginApi) {
                   rec.compactAtMs !== null &&
                   rec.expiresAtMs !== null
                     ? `compact in ${formatDurationMs(rec.compactAtMs - nowMs)} (cache expires in ${formatDurationMs(rec.expiresAtMs - nowMs)})`
-                    : rec.lastReason ?? rec.state;
+                    : describeSkipReason(rec.lastReason ?? rec.state);
                 const opt = rec.optedOut ? " [opted-out]" : "";
                 const ttl = describeTtlSource(rec, config);
                 const ttlField = ttl === null ? "" : `  ${ttl}`;
@@ -1192,8 +1218,10 @@ export default async function plugin(bb: BbPluginApi) {
                 compactedForSeq: existing?.compactedForSeq ?? null,
                 lastCompactedAtMs: existing?.lastCompactedAtMs ?? null,
                 optedOut: existing?.optedOut ?? false,
+                firstSeenAtMs: existing?.firstSeenAtMs ?? null,
               },
               nowMs,
+              explicitCompaction: false,
             });
             const result = {
               threadId,
@@ -1249,6 +1277,7 @@ export default async function plugin(bb: BbPluginApi) {
             );
             const outcome = await runCompactionForThread(threadId, {
               force: input.options.force === true,
+              explicitCompaction: true,
               signal: ctx.signal,
             });
             if (input.options.json) {

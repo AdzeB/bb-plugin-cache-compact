@@ -68,6 +68,7 @@ export interface PriorThreadState {
   readonly compactedForSeq: number | null;
   readonly lastCompactedAtMs: number | null;
   readonly optedOut: boolean;
+  readonly firstSeenAtMs: number | null;
 }
 
 export type TtlResolution =
@@ -120,7 +121,8 @@ export type SkipReason =
   | "already-compacted"
   | "cooldown"
   | "already-expired"
-  | "too-close-to-expiry";
+  | "too-close-to-expiry"
+  | "discovered-late";
 
 export type EligibilityResult =
   | {
@@ -174,6 +176,9 @@ const MIN_REMAINING_BEFORE_EXPIRY_MS = 10_000;
 
 /** Minimum lead window when clamping leadMinutes against a very short TTL. */
 const MIN_CLAMPED_LEAD_MS = 30_000;
+
+/** A thread must be known this long before its due time may trigger compaction. */
+export const ARMING_DELAY_MS = 60_000;
 
 export function parseProviderList(raw: string): ReadonlySet<string> {
   const entries = raw
@@ -385,8 +390,9 @@ export function evaluateEligibility(input: {
   readonly inspection: ThreadInspection;
   readonly prior: PriorThreadState;
   readonly nowMs: number;
+  readonly explicitCompaction: boolean;
 }): EligibilityResult {
-  const { config, inspection, prior, nowMs } = input;
+  const { config, inspection, prior, nowMs, explicitCompaction } = input;
   const latestSeq = latestActivitySequence(inspection);
   const methodRes = resolveCompactionMethod({
     providerId: inspection.providerId,
@@ -518,7 +524,14 @@ export function evaluateEligibility(input: {
         "too-close-to-expiry",
         `Only ${Math.round(timing.remainingMs / 1000)}s remain before cache expiry; skipping to avoid racing expiry.`,
       );
-    case "schedule":
+    case "schedule": {
+      const armedAtMs = (prior.firstSeenAtMs ?? nowMs) + ARMING_DELAY_MS;
+      if (!explicitCompaction && timing.compactAtMs <= armedAtMs) {
+        return skip(
+          "discovered-late",
+          `Thread was first seen inside its arming delay; its due time (${Math.round((nowMs - timing.compactAtMs) / 1000)}s ago) precedes ${Math.round(ARMING_DELAY_MS / 1000)}s of acquaintance.`,
+        );
+      }
       return {
         kind: "schedule",
         compactAtMs: timing.compactAtMs,
@@ -529,6 +542,7 @@ export function evaluateEligibility(input: {
         latestEventSeq: latestSeq,
         effectiveLeadMs: timing.effectiveLeadMs,
       };
+    }
     default: {
       const _exhaustive: never = timing;
       return _exhaustive;

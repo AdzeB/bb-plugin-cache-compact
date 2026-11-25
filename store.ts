@@ -21,6 +21,7 @@ export interface TrackedThreadRecord {
   readonly lastCompactedAtMs: number | null;
   readonly lastReason: string | null;
   readonly optedOut: boolean;
+  readonly firstSeenAtMs: number;
   readonly updatedAtMs: number;
 }
 
@@ -40,6 +41,7 @@ interface RawTrackedThreadRow {
   last_compacted_at_ms: number | null;
   last_reason: string | null;
   opted_out: number;
+  first_seen_at_ms: number;
   updated_at_ms: number;
 }
 
@@ -105,6 +107,7 @@ function mapRow(row: RawTrackedThreadRow): TrackedThreadRecord {
     lastCompactedAtMs: row.last_compacted_at_ms,
     lastReason: row.last_reason,
     optedOut: row.opted_out === 1,
+    firstSeenAtMs: row.first_seen_at_ms,
     updatedAtMs: row.updated_at_ms,
   };
 }
@@ -143,6 +146,8 @@ export function createCacheCompactStore(bb: BbPluginApi): CacheCompactStore {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_tracked_threads_due
       ON tracked_threads (state, compact_at_ms)`,
+    `ALTER TABLE tracked_threads
+      ADD COLUMN first_seen_at_ms INTEGER NOT NULL DEFAULT 0`,
   ]);
 
   const selectById = db.prepare<[string], RawTrackedThreadRow>(
@@ -165,6 +170,7 @@ export function createCacheCompactStore(bb: BbPluginApi): CacheCompactStore {
       last_compacted_at_ms,
       last_reason,
       opted_out,
+      first_seen_at_ms,
       updated_at_ms
     ) VALUES (
       @threadId,
@@ -182,6 +188,7 @@ export function createCacheCompactStore(bb: BbPluginApi): CacheCompactStore {
       @lastCompactedAtMs,
       @lastReason,
       @optedOut,
+      @firstSeenAtMs,
       @updatedAtMs
     )
     ON CONFLICT(thread_id) DO UPDATE SET
@@ -199,6 +206,7 @@ export function createCacheCompactStore(bb: BbPluginApi): CacheCompactStore {
       last_compacted_at_ms = excluded.last_compacted_at_ms,
       last_reason = excluded.last_reason,
       opted_out = excluded.opted_out,
+      first_seen_at_ms = excluded.first_seen_at_ms,
       updated_at_ms = excluded.updated_at_ms
   `);
   const deleteStmt = db.prepare<[string]>(
@@ -249,6 +257,7 @@ export function createCacheCompactStore(bb: BbPluginApi): CacheCompactStore {
       lastCompactedAtMs: record.lastCompactedAtMs,
       lastReason: record.lastReason,
       optedOut: record.optedOut ? 1 : 0,
+      firstSeenAtMs: record.firstSeenAtMs,
       updatedAtMs: record.updatedAtMs,
     });
   };
@@ -283,6 +292,7 @@ export function createCacheCompactStore(bb: BbPluginApi): CacheCompactStore {
             lastCompactedAtMs: null,
             lastReason: optedOut ? "opted-out" : "opted-in",
             optedOut,
+            firstSeenAtMs: nowMs,
             updatedAtMs: nowMs,
           };
       upsert(next);
