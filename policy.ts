@@ -1,4 +1,8 @@
-export type TtlSource = "compaction-offer" | "provider-ttl" | "fallback-ttl";
+export type TtlSource =
+  | "provider-ttl" // exact, reported by the provider
+  | "compaction-offer" // exact, derived by bb from a compaction offer
+  | "provider-fallback-ttl" // documented per-provider assumption
+  | "fallback-ttl"; // global assumption
 
 export type CompactionMethodKind = "native" | "slash-command";
 
@@ -17,6 +21,7 @@ export interface CacheCompactConfig {
   readonly leadMinutes: number;
   readonly providers: ReadonlySet<string>;
   readonly fallbackTtlMinutes: number;
+  readonly fallbackTtlMinutesByProvider: ReadonlyMap<string, number>;
   readonly cooldownMinutes: number;
   readonly skipWithActiveChildren: boolean;
 }
@@ -144,6 +149,26 @@ const KNOWN_SLASH_ONLY_PROVIDERS: ReadonlySet<string> = new Set([
   "antigravity-cli",
 ]);
 
+/**
+ * Documented cache-lifetime assumptions for providers that report none.
+ * OpenCode uses 5 minutes, the shortest common provider cache lifetime, so a
+ * wrong guess fails early rather than compacting after the cache really died.
+ * omp inherits Pi's behaviour and matches its sibling provider at 60 minutes.
+ */
+export const KNOWN_FALLBACK_TTL_PROVIDERS: ReadonlyMap<string, number> = new Map([
+  ["acp-opencode", 5],
+  ["acp-opencode-nono", 5],
+  ["acp-omp", 60],
+]);
+
+/** Default value for the `fallbackTtlMinutesByProvider` setting, derived from the map above. */
+export const DEFAULT_FALLBACK_TTL_BY_PROVIDER = [...KNOWN_FALLBACK_TTL_PROVIDERS]
+  .map(([providerId, minutes]) => `${providerId}=${minutes}`)
+  .join(",");
+
+/** Maximum per-provider assumed cache lifetime, matching the global setting's bound. */
+const MAX_FALLBACK_TTL_MINUTES = 1440;
+
 /** Minimum remaining TTL required to avoid racing an already-expiring cache. */
 const MIN_REMAINING_BEFORE_EXPIRY_MS = 10_000;
 
@@ -156,6 +181,54 @@ export function parseProviderList(raw: string): ReadonlySet<string> {
     .map((entry) => entry.trim().toLowerCase())
     .filter((entry) => entry.length > 0);
   return new Set(entries);
+}
+
+export function parseProviderTtlOverrides(raw: string): ReadonlyMap<string, number> {
+  const overrides = new Map<string, number>();
+  const entries = raw
+    .split(/[\s,]+/u)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  for (const entry of entries) {
+    const separatorIndex = entry.indexOf("=");
+    if (separatorIndex === -1) {
+      throw new Error(
+        `Invalid per-provider TTL entry "${entry}": expected "provider=minutes".`,
+      );
+    }
+    const provider = entry.slice(0, separatorIndex).trim().toLowerCase();
+    const minutesRaw = entry.slice(separatorIndex + 1).trim();
+    if (provider.length === 0) {
+      throw new Error(
+        `Invalid per-provider TTL entry "${entry}": missing provider id.`,
+      );
+    }
+    if (minutesRaw.length === 0) {
+      throw new Error(
+        `Invalid per-provider TTL entry "${entry}": missing minutes value.`,
+      );
+    }
+    if (!/^\d+$/u.test(minutesRaw)) {
+      throw new Error(
+        `Invalid per-provider TTL entry "${entry}": minutes must be a whole, non-negative number.`,
+      );
+    }
+    const minutes = Number(minutesRaw);
+    if (minutes > MAX_FALLBACK_TTL_MINUTES) {
+      throw new Error(
+        `Invalid per-provider TTL entry "${entry}": minutes must be at most ${MAX_FALLBACK_TTL_MINUTES}.`,
+      );
+    }
+    if (overrides.has(provider)) {
+      throw new Error(
+        `Duplicate per-provider TTL entry "${entry}": provider "${provider}" is listed more than once.`,
+      );
+    }
+    overrides.set(provider, minutes);
+  }
+
+  return overrides;
 }
 
 export function resolveCompactionMethod(input: {
@@ -179,12 +252,21 @@ export function resolveCompactionMethod(input: {
   };
 }
 
+export interface FallbackTtlSettings {
+  readonly fallbackTtlMinutes: number;
+  readonly fallbackTtlMinutesByProvider: ReadonlyMap<string, number>;
+}
+
 export function resolveCacheTtl(
   inspection: Pick<
     ThreadInspection,
-    "compactionOfferAtMs" | "tokenUsageEvent" | "latestTurnCompleted" | "updatedAt"
+    | "providerId"
+    | "compactionOfferAtMs"
+    | "tokenUsageEvent"
+    | "latestTurnCompleted"
+    | "updatedAt"
   >,
-  fallbackTtlMinutes: number,
+  settings: FallbackTtlSettings,
 ): TtlResolution {
   if (
     inspection.tokenUsageEvent !== null &&
@@ -212,7 +294,30 @@ export function resolveCacheTtl(
     };
   }
 
-  const fallbackTtlMs = fallbackTtlMinutes * 60_000;
+  const providerKey = inspection.providerId.toLowerCase();
+  const providerTtlMinutes = settings.fallbackTtlMinutesByProvider.get(providerKey);
+  if (providerTtlMinutes !== undefined) {
+    if (providerTtlMinutes <= 0) {
+      return {
+        kind: "none",
+        reason: `Provider "${inspection.providerId}" has a per-provider fallback TTL of 0, which disables the assumption.`,
+      };
+    }
+    const ttlMs = providerTtlMinutes * 60_000;
+    const anchorAtMs =
+      inspection.tokenUsageEvent?.createdAtMs ??
+      inspection.latestTurnCompleted?.createdAtMs ??
+      inspection.updatedAt;
+    return {
+      kind: "resolved",
+      source: "provider-fallback-ttl",
+      expiresAtMs: anchorAtMs + ttlMs,
+      ttlMs,
+      anchorAtMs,
+    };
+  }
+
+  const fallbackTtlMs = settings.fallbackTtlMinutes * 60_000;
   if (fallbackTtlMs <= 0) {
     return {
       kind: "none",
@@ -290,7 +395,10 @@ export function evaluateEligibility(input: {
   });
   const method: CompactionMethodKind | null =
     methodRes.kind === "unsupported" ? null : methodRes.kind;
-  const ttlRes = resolveCacheTtl(inspection, config.fallbackTtlMinutes);
+  const ttlRes = resolveCacheTtl(inspection, {
+    fallbackTtlMinutes: config.fallbackTtlMinutes,
+    fallbackTtlMinutesByProvider: config.fallbackTtlMinutesByProvider,
+  });
   const expiresAtMs = ttlRes.kind === "resolved" ? ttlRes.expiresAtMs : null;
   const ttlSource = ttlRes.kind === "resolved" ? ttlRes.source : null;
 

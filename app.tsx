@@ -58,6 +58,8 @@ function ttlSourceLabel(source: TrackedItem["ttlSource"]): string {
       return "exact TTL";
     case "compaction-offer":
       return "offer TTL";
+    case "provider-fallback-ttl":
+      return "assumed TTL";
     case "fallback-ttl":
       return "fallback TTL";
     case null:

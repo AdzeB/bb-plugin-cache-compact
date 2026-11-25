@@ -8,24 +8,42 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import {
   computeCompactAtMs,
+  DEFAULT_FALLBACK_TTL_BY_PROVIDER,
   evaluateEligibility,
   parseProviderList,
+  parseProviderTtlOverrides,
   resolveCacheTtl,
   resolveCompactionMethod,
   type CacheCompactConfig,
+  type FallbackTtlSettings,
   type ThreadInspection,
 } from "./policy.js";
 import plugin, { DEFAULT_PROVIDERS } from "./server.js";
 
 const PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
+function makeTtlSettings(
+  overrides: Partial<FallbackTtlSettings> = {},
+): FallbackTtlSettings {
+  return {
+    fallbackTtlMinutes: 60,
+    fallbackTtlMinutesByProvider: parseProviderTtlOverrides(
+      DEFAULT_FALLBACK_TTL_BY_PROVIDER,
+    ),
+    ...overrides,
+  };
+}
+
 function makeConfig(overrides: Partial<CacheCompactConfig> = {}): CacheCompactConfig {
   return {
     enabled: true,
     minTokens: 100_000,
     leadMinutes: 3,
-    providers: parseProviderList("claude-code,pi,antigravity-cli"),
+    providers: parseProviderList(
+      "claude-code,pi,antigravity-cli,acp-opencode,acp-opencode-nono,acp-omp",
+    ),
     fallbackTtlMinutes: 60,
+    fallbackTtlMinutesByProvider: makeTtlSettings().fallbackTtlMinutesByProvider,
     cooldownMinutes: 10,
     skipWithActiveChildren: true,
     ...overrides,
@@ -75,12 +93,13 @@ describe("policy", () => {
   it("resolves exact provider-ttl before compactionOfferAt and fallback", () => {
     const res = resolveCacheTtl(
       {
+        providerId: "claude-code",
         compactionOfferAtMs: 9_999_999,
         tokenUsageEvent: { seq: 10, createdAtMs: 1_000_000, promptCacheTtlMs: 300_000 },
         latestTurnCompleted: { seq: 11, createdAtMs: 1_001_000 },
         updatedAt: 1_002_000,
       },
-      60,
+      makeTtlSettings(),
     );
     expect(res).toEqual({
       kind: "resolved",
@@ -94,12 +113,13 @@ describe("policy", () => {
   it("falls back to compactionOfferAt when promptCacheTtlMs is absent", () => {
     const res = resolveCacheTtl(
       {
+        providerId: "claude-code",
         compactionOfferAtMs: 4_600_000,
         tokenUsageEvent: null,
         latestTurnCompleted: null,
         updatedAt: 1_000_000,
       },
-      60,
+      makeTtlSettings(),
     );
     expect(res).toEqual({
       kind: "resolved",
@@ -113,12 +133,13 @@ describe("policy", () => {
   it("uses fallback-ttl for antigravity-cli when no TTL is reported", () => {
     const res = resolveCacheTtl(
       {
+        providerId: "antigravity-cli",
         compactionOfferAtMs: null,
         tokenUsageEvent: null,
         latestTurnCompleted: { seq: 12, createdAtMs: 2_000_000 },
         updatedAt: 2_500_000,
       },
-      60,
+      makeTtlSettings(),
     );
     expect(res).toEqual({
       kind: "resolved",
@@ -126,6 +147,127 @@ describe("policy", () => {
       expiresAtMs: 2_000_000 + 3_600_000,
       ttlMs: 3_600_000,
       anchorAtMs: 2_000_000,
+    });
+  });
+
+  it("uses a documented per-provider TTL anchored to the latest completed turn", () => {
+    const res = resolveCacheTtl(
+      {
+        providerId: "acp-opencode",
+        compactionOfferAtMs: null,
+        tokenUsageEvent: null,
+        latestTurnCompleted: { seq: 12, createdAtMs: 2_000_000 },
+        updatedAt: 2_500_000,
+      },
+      makeTtlSettings(),
+    );
+    expect(res).toEqual({
+      kind: "resolved",
+      source: "provider-fallback-ttl",
+      expiresAtMs: 2_000_000 + 5 * 60_000,
+      ttlMs: 5 * 60_000,
+      anchorAtMs: 2_000_000,
+    });
+  });
+
+  it("uses the global fallback when the provider has no per-provider override", () => {
+    const res = resolveCacheTtl(
+      {
+        providerId: "acp-omp",
+        compactionOfferAtMs: null,
+        tokenUsageEvent: null,
+        latestTurnCompleted: { seq: 12, createdAtMs: 2_000_000 },
+        updatedAt: 2_500_000,
+      },
+      makeTtlSettings({ fallbackTtlMinutesByProvider: new Map() }),
+    );
+    expect(res).toEqual({
+      kind: "resolved",
+      source: "fallback-ttl",
+      expiresAtMs: 2_000_000 + 60 * 60_000,
+      ttlMs: 60 * 60_000,
+      anchorAtMs: 2_000_000,
+    });
+  });
+
+  it("prefers a per-provider override over the global fallback", () => {
+    const res = resolveCacheTtl(
+      {
+        providerId: "acp-opencode",
+        compactionOfferAtMs: null,
+        tokenUsageEvent: null,
+        latestTurnCompleted: null,
+        updatedAt: 1_000_000,
+      },
+      makeTtlSettings({
+        fallbackTtlMinutes: 60,
+        fallbackTtlMinutesByProvider: new Map([["acp-opencode", 90]]),
+      }),
+    );
+    expect(res).toEqual({
+      kind: "resolved",
+      source: "provider-fallback-ttl",
+      expiresAtMs: 1_000_000 + 90 * 60_000,
+      ttlMs: 90 * 60_000,
+      anchorAtMs: 1_000_000,
+    });
+  });
+
+  it("rejects malformed per-provider TTL overrides", () => {
+    const cases: ReadonlyArray<{ readonly raw: string; readonly offending: string }> = [
+      { raw: "acp-omp", offending: "acp-omp" },
+      { raw: "=5", offending: "=5" },
+      { raw: "acp-omp=", offending: "acp-omp=" },
+      { raw: "acp-omp=abc", offending: "acp-omp=abc" },
+      { raw: "acp-omp=-5", offending: "acp-omp=-5" },
+      { raw: "acp-omp=1441", offending: "acp-omp=1441" },
+      { raw: "acp-omp=5,acp-omp=7", offending: "acp-omp=7" },
+    ];
+    for (const { raw, offending } of cases) {
+      expect(() => parseProviderTtlOverrides(raw)).toThrow(Error);
+      expect(() => parseProviderTtlOverrides(raw)).toThrow(offending);
+    }
+  });
+
+  it("treats a per-provider override of 0 as no assumed TTL", () => {
+    const res = resolveCacheTtl(
+      {
+        providerId: "acp-opencode",
+        compactionOfferAtMs: null,
+        tokenUsageEvent: null,
+        latestTurnCompleted: { seq: 12, createdAtMs: 2_000_000 },
+        updatedAt: 2_500_000,
+      },
+      makeTtlSettings({
+        fallbackTtlMinutes: 60,
+        fallbackTtlMinutesByProvider: new Map([["acp-opencode", 0]]),
+      }),
+    );
+    expect(res.kind).toBe("none");
+    if (res.kind === "none") {
+      expect(res.reason).toContain("acp-opencode");
+    }
+  });
+
+  it("lets an exact promptCacheTtlMs win over a per-provider override", () => {
+    const res = resolveCacheTtl(
+      {
+        providerId: "acp-opencode",
+        compactionOfferAtMs: null,
+        tokenUsageEvent: { seq: 10, createdAtMs: 1_000_000, promptCacheTtlMs: 300_000 },
+        latestTurnCompleted: null,
+        updatedAt: 1_000_000,
+      },
+      makeTtlSettings({
+        fallbackTtlMinutesByProvider: new Map([["acp-opencode", 90]]),
+      }),
+    );
+    expect(res).toEqual({
+      kind: "resolved",
+      source: "provider-ttl",
+      expiresAtMs: 1_300_000,
+      ttlMs: 300_000,
+      anchorAtMs: 1_000_000,
     });
   });
 
@@ -366,6 +508,78 @@ describe("server plugin integration", () => {
     expect(compactFn).toHaveBeenCalledTimes(1);
     expect(compactFn).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: "thr_claude_1" }),
+    );
+
+    service.controller.abort();
+    await service.done;
+    await harness.lifecycle.dispose();
+  });
+
+  it("schedules an acp-opencode thread with the shipped assumed TTL and no advertised /compact", async () => {
+    vi.useFakeTimers();
+    const startMs = Date.UTC(2026, 10, 20, 22, 0, 0);
+    vi.setSystemTime(startMs);
+
+    const openCodeThread = makeThreadResponse({
+      id: "thr_opencode_1",
+      providerId: "acp-opencode",
+      status: "idle",
+      updatedAt: startMs,
+    });
+
+    const compactFn = vi.fn(async () => ({ ok: true as const }));
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "cache-compact",
+      sdk: {
+        threads: {
+          list: async (args) =>
+            args?.parentThreadId !== undefined ? [] : [openCodeThread],
+          get: async () => openCodeThread,
+          compact: compactFn,
+          experimental_headState: async () => ({
+            activePromptMode: null,
+            contextWindowUsage: {
+              estimated: false,
+              modelContextWindow: 1_000_000,
+              usedTokens: 160_000,
+            },
+            extensionStates: {},
+            modelFallback: null,
+            pendingTodos: null,
+            providerCommands: null,
+            sessionOptions: null,
+          }),
+          events: { list: async () => [] },
+          interactions: { list: async () => [] },
+        },
+      },
+    });
+
+    await plugin(bb);
+    const service = harness.behavior.runService("cache-compact-scheduler");
+
+    // Let startup reconcile settle
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(compactFn).not.toHaveBeenCalled();
+
+    const statusBefore = await harness.behavior.runCli(["status", "--json"]);
+    expect(statusBefore.exitCode).toBe(0);
+    const parsedBefore = JSON.parse(statusBefore.stdout ?? "{}");
+    expect(parsedBefore.config.providers).toContain("acp-opencode");
+    expect(parsedBefore.config.fallbackTtlMinutesByProvider["acp-opencode"]).toBe(5);
+    expect(parsedBefore.tracked).toHaveLength(1);
+    const record = parsedBefore.tracked[0];
+    expect(record.state).toBe("scheduled");
+    expect(record.method).toBe("native");
+    expect(record.ttlSource).toBe("provider-fallback-ttl");
+    // No token event and no completed turn, so the anchor is the thread's updatedAt.
+    expect(record.expiresAtMs - startMs).toBe(5 * 60_000);
+
+    // 5m TTL minus the 3m lead leaves a 2m target.
+    await vi.advanceTimersByTimeAsync(2 * 60_000 + 5_000);
+    expect(compactFn).toHaveBeenCalledTimes(1);
+    expect(compactFn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "thr_opencode_1" }),
     );
 
     service.controller.abort();

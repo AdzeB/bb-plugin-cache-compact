@@ -56,6 +56,7 @@ const VALID_STATES: ReadonlySet<TrackedThreadState> = new Set([
 const VALID_TTL_SOURCES: ReadonlySet<TtlSource> = new Set([
   "compaction-offer",
   "provider-ttl",
+  "provider-fallback-ttl",
   "fallback-ttl",
 ]);
 

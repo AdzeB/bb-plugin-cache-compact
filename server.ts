@@ -7,10 +7,12 @@ import {
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
+  DEFAULT_FALLBACK_TTL_BY_PROVIDER,
   evaluateEligibility,
   isUnsupportedCompactionError,
   latestActivitySequence,
   parseProviderList,
+  parseProviderTtlOverrides,
   resolveCompactionMethod,
   type CacheCompactConfig,
   type CompactionMethodKind,
@@ -35,7 +37,12 @@ const trackedThreadSchema = z.object({
     "failed",
   ]),
   ttlSource: z
-    .enum(["compaction-offer", "provider-ttl", "fallback-ttl"])
+    .enum([
+      "compaction-offer",
+      "provider-ttl",
+      "provider-fallback-ttl",
+      "fallback-ttl",
+    ])
     .nullable(),
   method: z.enum(["native", "slash-command"]).nullable(),
   usedTokens: z.number().nullable(),
@@ -62,6 +69,7 @@ export const rpcContract = defineRpcContract({
         leadMinutes: z.number(),
         providers: z.array(z.string()),
         fallbackTtlMinutes: z.number(),
+        fallbackTtlMinutesByProvider: z.record(z.string(), z.number()),
         cooldownMinutes: z.number(),
         skipWithActiveChildren: z.boolean(),
       }),
@@ -233,6 +241,23 @@ export default async function plugin(bb: BbPluginApi) {
       experimental_schema: z.number().int().min(0).max(1440),
       default: 60,
     },
+    fallbackTtlMinutesByProvider: {
+      type: "string",
+      label: "Per-provider fallback TTL (minutes)",
+      description:
+        "Comma-separated provider=minutes assumptions for providers that report no cache lifetime, for example acp-opencode=5,acp-omp=60. These are documented guesses, not measurements. A listed provider uses this value instead of the global fallback; 0 disables the assumption for that provider.",
+      experimental_schema: z
+        .string()
+        .max(1024, "Per-provider TTL list must be at most 1024 characters.")
+        .superRefine((value, ctx) => {
+          try {
+            parseProviderTtlOverrides(value);
+          } catch (error) {
+            ctx.addIssue({ code: "custom", message: formatError(error) });
+          }
+        }),
+      default: DEFAULT_FALLBACK_TTL_BY_PROVIDER,
+    },
     cooldownMinutes: {
       type: "number",
       label: "Per-thread cooldown (minutes)",
@@ -276,6 +301,9 @@ export default async function plugin(bb: BbPluginApi) {
         leadMinutes: config.leadMinutes,
         providers: [...config.providers],
         fallbackTtlMinutes: config.fallbackTtlMinutes,
+        fallbackTtlMinutesByProvider: Object.fromEntries(
+          config.fallbackTtlMinutesByProvider,
+        ),
         cooldownMinutes: config.cooldownMinutes,
         skipWithActiveChildren: config.skipWithActiveChildren,
       },
@@ -313,6 +341,9 @@ export default async function plugin(bb: BbPluginApi) {
       leadMinutes: raw.leadMinutes,
       providers: parseProviderList(raw.providers),
       fallbackTtlMinutes: raw.fallbackTtlMinutes,
+      fallbackTtlMinutesByProvider: parseProviderTtlOverrides(
+        raw.fallbackTtlMinutesByProvider,
+      ),
       cooldownMinutes: raw.cooldownMinutes,
       skipWithActiveChildren: raw.skipWithActiveChildren,
     };
@@ -1048,6 +1079,9 @@ export default async function plugin(bb: BbPluginApi) {
                 leadMinutes: config.leadMinutes,
                 providers: [...config.providers],
                 fallbackTtlMinutes: config.fallbackTtlMinutes,
+                fallbackTtlMinutesByProvider: Object.fromEntries(
+                  config.fallbackTtlMinutesByProvider,
+                ),
                 cooldownMinutes: config.cooldownMinutes,
                 skipWithActiveChildren: config.skipWithActiveChildren,
               },
