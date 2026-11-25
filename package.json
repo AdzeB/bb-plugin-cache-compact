@@ -23,7 +23,9 @@
     "tokens",
     "context-window",
     "claude-code",
-    "antigravity"
+    "antigravity",
+    "opencode",
+    "omp"
   ],
   "type": "module",
   "engines": {

@@ -1,6 +1,6 @@
 # Extension plan: OpenCode and Oh My Pi
 
-Status: proposal, not implemented. Baseline for this plan is commit `eff32d0` on `main`.
+Status: implemented on branch `feat/opencode-omp-support`. omp support stays unproven until a live compaction is observed, as the open question below notes.
 
 ## What the evidence says
 
@@ -40,6 +40,13 @@ Five minutes for OpenCode is the Anthropic default cache lifetime and the shorte
 - Model-level TTL inference (Anthropic routes get 5m, others get none) would be more accurate but needs a model-to-route mapping the plugin does not have, and BB stores model per thread only through provider events. Deferred until a thread shows a per-model split worth the complexity.
 - Treating both runtimes as slash-only and reusing the Antigravity path would be wrong. They support native compaction, and the slash path exists only for providers that do not.
 - A `minTokens`-only mode with no TTL at all would compact on every idle transition and churn the cache. Rejected.
+
+## What shipped differently
+
+Two points diverge from the proposal and are recorded here rather than folded back into it:
+
+- The shipped TTL table has three entries, not the plan's two. `acp-opencode-nono` is the same OpenCode client under a sandbox wrapper, and 14 threads on the author's machine carry that id. Without an entry they would inherit the 60-minute global guess instead of the 5-minute OpenCode one.
+- The plan's single `fallback-ttl` source became two: `provider-fallback-ttl` for a documented per-provider assumption, and `fallback-ttl` for the global default. A documented assumption and a blanket default deserve different labels in the status output and Settings.
 
 ## Tests that would prove it
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Detect `acp-opencode`, `acp-opencode-nono` and `acp-omp` threads by default, compacting them natively.
+- Ship a per-provider fallback TTL table (`fallbackTtlMinutesByProvider`) with assumed lifetimes of 5 minutes for OpenCode and 60 minutes for Oh My Pi.
+- Show the `provider-fallback-ttl` source, with the minutes in play, in `bb cache-compact status` and the Settings countdown.
+
 ## 0.1.0
 
 - Proactive pre-cache-expiry compaction scheduler for idle BB threads.
