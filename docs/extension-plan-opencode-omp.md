@@ -47,6 +47,7 @@ Two points diverge from the proposal and are recorded here rather than folded ba
 
 - The shipped TTL table has three entries, not the plan's two. `acp-opencode-nono` is the same OpenCode client under a sandbox wrapper, and 14 threads on the author's machine carry that id. Without an entry they would inherit the 60-minute global guess instead of the 5-minute OpenCode one.
 - The plan's single `fallback-ttl` source became two: `provider-fallback-ttl` for a documented per-provider assumption, and `fallback-ttl` for the global default. A documented assumption and a blanket default deserve different labels in the status output and Settings.
+- The plan had no guard against acting on a thread the plugin had only just met. Live verification showed why one is needed: widening the default provider list put four new provider ids on the path of the first scan, and that scan compacts a thread whose due time has already passed, because the target clamps to now. A thread must now be known for 60 seconds before its due time can fire. Explicit compaction from `bb cache-compact now` or the Settings button is exempt. This is scope the plan did not cover.
 
 ## Tests that would prove it
 

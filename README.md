@@ -52,7 +52,7 @@ OpenCode and Oh My Pi report no cache lifetime, and neither emits the token usag
 
 Override any entry with `fallbackTtlMinutesByProvider`, for example `acp-opencode=10,acp-omp=60`. A per-provider value of `0` turns the assumption off for that provider.
 
-> **Warning:** threads already inside the lead window are compacted on the first scan, not after a delay. With a 5-minute assumption and the default 3-minute lead, any idle OpenCode thread whose last activity was 2 to 5 minutes ago is due immediately when the plugin first reconciles. A fresh install on a busy machine therefore compacts a batch of recently active threads at once. If that is not what you want, raise `minTokens`, or opt out the threads you care about before enabling the plugin.
+> **First scan and the arming window.** A thread must be known to the plugin for 60 seconds before its due time can trigger a compaction. A fresh install therefore compacts nothing immediately: a thread first met inside its lead window is recorded as `discovered late` and left to expire, and normal scheduling resumes from that thread's next idle period. Manual compaction from `bb cache-compact now` or the Settings **Compact now** button is exempt, because that is an operator acting on a thread in front of them.
 
 > **Tip:** BB releases idle provider processes after `idleProviderSessionTimeoutMinutes` (default `30`). For 1-hour caches, setting `bb settings general idleProviderSessionTimeoutMinutes 60` avoids restarting the local provider process right before compaction runs.
 
