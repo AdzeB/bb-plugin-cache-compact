@@ -15,7 +15,7 @@ import {
   type CacheCompactConfig,
   type ThreadInspection,
 } from "./policy.js";
-import plugin from "./server.js";
+import plugin, { DEFAULT_PROVIDERS } from "./server.js";
 
 const PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
@@ -174,6 +174,40 @@ describe("policy", () => {
         nativeCompactionUnsupported: false,
       }).kind,
     ).toBe("unsupported");
+  });
+
+  it("selects native compaction for OpenCode and Oh My Pi regardless of the /compact command", () => {
+    for (const providerId of ["acp-opencode", "acp-opencode-nono", "acp-omp"]) {
+      expect(
+        resolveCompactionMethod({
+          providerId,
+          advertisesCompactCommand: true,
+          nativeCompactionUnsupported: false,
+        }),
+      ).toEqual({ kind: "native" });
+
+      expect(
+        resolveCompactionMethod({
+          providerId,
+          advertisesCompactCommand: false,
+          nativeCompactionUnsupported: false,
+        }),
+      ).toEqual({ kind: "native" });
+    }
+  });
+
+  it("includes OpenCode and Oh My Pi in the default provider list", () => {
+    const providers = parseProviderList(DEFAULT_PROVIDERS);
+    for (const providerId of [
+      "claude-code",
+      "pi",
+      "antigravity-cli",
+      "acp-opencode",
+      "acp-opencode-nono",
+      "acp-omp",
+    ]) {
+      expect(providers.has(providerId)).toBe(true);
+    }
   });
 
   it("skips threads below minTokens, excluded providers, active children, or recent /compact turns", () => {
