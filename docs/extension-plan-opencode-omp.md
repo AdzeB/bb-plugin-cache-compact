@@ -1,6 +1,6 @@
 # Extension plan: OpenCode and Oh My Pi
 
-Status: implemented on branch `feat/opencode-omp-support`. omp support stays unproven until a live compaction is observed, as the open question below notes.
+Status: implemented on branch `feat/opencode-omp-support`, and verified on a live bb 0.50.1 install. omp support is no longer unproven: see the resolved open question at the end.
 
 ## What the evidence says
 
@@ -60,4 +60,4 @@ In `server.test.ts`, following the existing shapes:
 
 ## Open question for the reviewer
 
-omp has never been compacted on this machine, so its support rests on the declared capability, the advertised command and BB's parser rather than on an observed event. The first verification after implementation should be one live `bb thread compact` on a disposable omp thread, and the plan should be treated as unproven for omp until that happens.
+Resolved. omp had never been compacted on this machine, so its support rested on the declared capability, the advertised command and BB's parser rather than on an observed event. It was verified on 2026-11-25 with one `bb thread compact` on a disposable `acp-omp` thread, bb 0.50.1, omp 19.1.1. omp reported `Compaction complete. Tokens: 35814 -> 34714 (saved 1100).` and BB recorded a `thread/compacted` event. The plugin reaches the same server-side path, so the claim now rests on an observation rather than on an inference.

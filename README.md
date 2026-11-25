@@ -48,9 +48,11 @@ OpenCode and Oh My Pi report no cache lifetime, and neither emits the token usag
 | --- | --- | --- |
 | `acp-opencode` | 5m | Anthropic's default cache lifetime, chosen as the shortest common case, so a wrong guess compacts early instead of after the cache is already cold |
 | `acp-opencode-nono` | 5m | The same OpenCode client under a sandbox wrapper |
-| `acp-omp` | 60m | **Unproven.** BB declares manual compaction for omp, omp advertises the `compact` command, and BB has a dedicated omp compaction-outcome parser, but no live compaction has been observed yet |
+| `acp-omp` | 60m | BB declares manual compaction for omp, omp advertises the `compact` command, and BB has a dedicated omp compaction-outcome parser. Verified live: `bb thread compact` on bb 0.50.1 with omp 19.1.1 returned `Compaction complete. Tokens: 35814 -> 34714` and emitted `thread/compacted` |
 
 Override any entry with `fallbackTtlMinutesByProvider`, for example `acp-opencode=10,acp-omp=60`. A per-provider value of `0` turns the assumption off for that provider.
+
+> **Warning:** threads already inside the lead window are compacted on the first scan, not after a delay. With a 5-minute assumption and the default 3-minute lead, any idle OpenCode thread whose last activity was 2 to 5 minutes ago is due immediately when the plugin first reconciles. A fresh install on a busy machine therefore compacts a batch of recently active threads at once. If that is not what you want, raise `minTokens`, or opt out the threads you care about before enabling the plugin.
 
 > **Tip:** BB releases idle provider processes after `idleProviderSessionTimeoutMinutes` (default `30`). For 1-hour caches, setting `bb settings general idleProviderSessionTimeoutMinutes 60` avoids restarting the local provider process right before compaction runs.
 
