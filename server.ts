@@ -164,6 +164,33 @@ function formatDurationMs(ms: number): string {
   return remMins === 0 ? `${hours}h` : `${hours}h ${remMins}m`;
 }
 
+/**
+ * Name a tracked thread's TTL source and, when the lifetime is an assumption,
+ * the minutes in play. A measured hour and a guessed 5 minutes must not read
+ * with the same confidence.
+ */
+function describeTtlSource(
+  record: Pick<TrackedThreadRecord, "ttlSource" | "providerId">,
+  config: Pick<
+    CacheCompactConfig,
+    "fallbackTtlMinutes" | "fallbackTtlMinutesByProvider"
+  >,
+): string | null {
+  if (record.ttlSource === null) return null;
+  if (record.ttlSource === "provider-fallback-ttl") {
+    const assumedMinutes = config.fallbackTtlMinutesByProvider.get(
+      record.providerId.toLowerCase(),
+    );
+    return assumedMinutes === undefined
+      ? "via=provider-fallback-ttl"
+      : `via=provider-fallback-ttl ${assumedMinutes}m assumed`;
+  }
+  if (record.ttlSource === "fallback-ttl") {
+    return `via=fallback-ttl ${config.fallbackTtlMinutes}m assumed (global)`;
+  }
+  return `via=${record.ttlSource}`;
+}
+
 function displayThreadTitle(
   thread: Pick<ThreadSummary, "title" | "titleFallback" | "id">,
 ): string {
@@ -1096,10 +1123,15 @@ export default async function plugin(bb: BbPluginApi) {
             if (input.options.json) {
               return { exitCode: 0, stdout: JSON.stringify(payload, null, 2) };
             }
+            const assumedTtls = [...config.fallbackTtlMinutesByProvider]
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([providerId, minutes]) => `${providerId}=${minutes}m`)
+              .join(", ");
             const lines = [
               `Cache Compact: ${config.enabled ? "enabled" : "disabled"}`,
               `  Providers: ${[...config.providers].join(", ") || "(none)"}`,
               `  Min tokens: ${config.minTokens.toLocaleString("en-US")} | Lead: ${config.leadMinutes}m | Fallback TTL: ${config.fallbackTtlMinutes}m | Cooldown: ${config.cooldownMinutes}m`,
+              `  Assumed TTLs: ${assumedTtls || "(none)"}`,
               "",
             ];
             if (records.length === 0) {
@@ -1118,8 +1150,10 @@ export default async function plugin(bb: BbPluginApi) {
                     ? `compact in ${formatDurationMs(rec.compactAtMs - nowMs)} (cache expires in ${formatDurationMs(rec.expiresAtMs - nowMs)})`
                     : rec.lastReason ?? rec.state;
                 const opt = rec.optedOut ? " [opted-out]" : "";
+                const ttl = describeTtlSource(rec, config);
+                const ttlField = ttl === null ? "" : `  ${ttl}`;
                 lines.push(
-                  `  ${rec.threadId}  [${rec.state}]${opt}  ${rec.providerId}  ${tokens}  ${timing}`,
+                  `  ${rec.threadId}  [${rec.state}]${opt}  ${rec.providerId}  ${tokens}${ttlField}  ${timing}`,
                 );
               }
             }

@@ -61,10 +61,21 @@ function ttlSourceLabel(source: TrackedItem["ttlSource"]): string {
     case "provider-fallback-ttl":
       return "assumed TTL";
     case "fallback-ttl":
-      return "fallback TTL";
+      return "global fallback TTL";
     case null:
       return "—";
   }
+}
+
+function assumedTtlMinutes(
+  item: Pick<TrackedItem, "ttlSource" | "providerId">,
+  config: StatusData["config"],
+): number | null {
+  if (item.ttlSource === "provider-fallback-ttl") {
+    return config.fallbackTtlMinutesByProvider[item.providerId.toLowerCase()] ?? null;
+  }
+  if (item.ttlSource === "fallback-ttl") return config.fallbackTtlMinutes;
+  return null;
 }
 
 function CacheCompactSettingsSection() {
@@ -128,6 +139,10 @@ function CacheCompactSettingsSection() {
     }
     return items;
   }, [data, filter]);
+
+  const assumptionCount = data
+    ? Object.keys(data.config.fallbackTtlMinutesByProvider).length
+    : 0;
 
   async function handleReconcile() {
     setReconciling(true);
@@ -235,7 +250,9 @@ function CacheCompactSettingsSection() {
             {data ? `${data.config.fallbackTtlMinutes}m` : "—"}
           </div>
           <div className="text-[11px] text-muted-foreground">
-            {data ? `${data.config.providers.length} providers` : "loading"}
+            {data
+              ? `${assumptionCount} per-provider assumption${assumptionCount === 1 ? "" : "s"}`
+              : "loading"}
           </div>
         </div>
       </div>
@@ -302,6 +319,9 @@ function CacheCompactSettingsSection() {
         <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
           {visibleItems.map((item) => {
             const busy = busyThreads.has(item.threadId);
+            const assumedMinutes = data
+              ? assumedTtlMinutes(item, data.config)
+              : null;
             return (
               <div
                 key={item.threadId}
@@ -364,6 +384,15 @@ function CacheCompactSettingsSection() {
                             · cache expires in{" "}
                             <span className="tabular-nums">
                               {formatCountdown(item.expiresAtMs, nowMs)}
+                            </span>
+                          </>
+                        )}
+                        {assumedMinutes !== null && (
+                          <>
+                            {" "}
+                            ·{" "}
+                            <span className="tabular-nums">
+                              {assumedMinutes}m assumed
                             </span>
                           </>
                         )}

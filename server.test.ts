@@ -587,6 +587,64 @@ describe("server plugin integration", () => {
     await harness.lifecycle.dispose();
   });
 
+  it("names the TTL source and assumed minutes in the human-readable status output", async () => {
+    vi.useFakeTimers();
+    const startMs = Date.UTC(2026, 10, 20, 22, 0, 0);
+    vi.setSystemTime(startMs);
+
+    const openCodeThread = makeThreadResponse({
+      id: "thr_opencode_status",
+      providerId: "acp-opencode",
+      status: "idle",
+      updatedAt: startMs,
+    });
+
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "cache-compact",
+      sdk: {
+        threads: {
+          list: async (args) =>
+            args?.parentThreadId !== undefined ? [] : [openCodeThread],
+          get: async () => openCodeThread,
+          compact: async () => ({ ok: true as const }),
+          experimental_headState: async () => ({
+            activePromptMode: null,
+            contextWindowUsage: {
+              estimated: false,
+              modelContextWindow: 1_000_000,
+              usedTokens: 160_000,
+            },
+            extensionStates: {},
+            modelFallback: null,
+            pendingTodos: null,
+            providerCommands: null,
+            sessionOptions: null,
+          }),
+          events: { list: async () => [] },
+          interactions: { list: async () => [] },
+        },
+      },
+    });
+
+    await plugin(bb);
+    const service = harness.behavior.runService("cache-compact-scheduler");
+
+    // Let startup reconcile schedule the thread
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const status = await harness.behavior.runCli(["status"]);
+    expect(status.exitCode).toBe(0);
+    const stdout = status.stdout ?? "";
+    expect(stdout).toContain("thr_opencode_status");
+    expect(stdout).toContain("provider-fallback-ttl");
+    expect(stdout).toContain("5m assumed");
+    expect(stdout).toMatch(/Assumed TTLs: .*acp-opencode=5m/u);
+
+    service.controller.abort();
+    await service.done;
+    await harness.lifecycle.dispose();
+  });
+
   it("compacts an antigravity-cli thread via /compact and does not loop on subsequent idle", async () => {
     vi.useFakeTimers();
     const startMs = Date.UTC(2026, 10, 20, 22, 0, 0);
